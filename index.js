@@ -1,12 +1,30 @@
+// Load environment variables
+require('dotenv').config();
 const axios = require('axios');
 const crypto = require('crypto');
 
-// Your Paga API credentials
+// Validate required environment variables
+const requiredEnvVars = [
+    'PAGA_BASE_URL',
+    'PAGA_PRINCIPAL', 
+    'PAGA_CREDENTIALS',
+    'PAGA_HASH_KEY'
+];
+
+const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+if (missingVars.length > 0) {
+    console.error('❌ Missing required environment variables:');
+    missingVars.forEach(varName => console.error(`   - ${varName}`));
+    console.error('\nPlease check your .env file and ensure all variables are set.');
+    process.exit(1);
+}
+
+// Paga API configuration from environment variables
 const PAGA_CONFIG = {
-    baseUrl: 'https://www.mypaga.com', // Live/Mainnet environment
-    principal: '8593CE7A-6D1B-48AB-82B1-57FD879EF3E7',
-    credentials: 'jS8#xwKvP6N*3CD',
-    hashKey: '390fd3c1d7c04bb285c7c21f74d380c9b901320792534685919ee06dba87a2f59cad388022d848748489185669be1a805d790dabc2104a13bd97106453de233c'
+    baseUrl: process.env.PAGA_BASE_URL,
+    principal: process.env.PAGA_PRINCIPAL,
+    credentials: process.env.PAGA_CREDENTIALS,
+    hashKey: process.env.PAGA_HASH_KEY
 };
 
 // Function to generate SHA-512 hash
@@ -15,27 +33,32 @@ function generateHash(hashString) {
 }
 
 // Function to generate unique reference number
-function generateReferenceNumber() {
-    return `balance-test-${Date.now()}`;
+function generateReferenceNumber(prefix = 'paga-api') {
+    return `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
 
-// Function to check account balance
-async function checkAccountBalance() {
+// Function to check account balance - FIXED VERSION
+async function checkAccountBalance(accountPrincipal, accountCredentials) {
     try {
+        // Validate required parameters
+        if (!accountPrincipal || !accountCredentials) {
+            throw new Error('accountPrincipal and accountCredentials are required for balance check');
+        }
+        
         // Generate reference number
-        const referenceNumber = generateReferenceNumber();
+        const referenceNumber = generateReferenceNumber('balance');
         
         // Generate hash: referenceNumber + hashKey
         const hashString = referenceNumber + PAGA_CONFIG.hashKey;
         const hash = generateHash(hashString);
         
-        // Request payload
+        // Request payload with actual account details
         const requestData = {
             referenceNumber: referenceNumber,
-            accountPrincipal: "",
-            sourceOfFunds: "",
-            accountCredentials: "",
-            locale: ""
+            accountPrincipal: accountPrincipal,
+            sourceOfFunds: accountPrincipal,
+            accountCredentials: accountCredentials,
+            locale: process.env.PAGA_LOCALE || "en"
         };
         
         // Request headers
@@ -48,8 +71,8 @@ async function checkAccountBalance() {
         
         console.log('🔍 Checking account balance...');
         console.log('Reference Number:', referenceNumber);
-        console.log('Hash String:', hashString);
-        console.log('Generated Hash:', hash);
+        console.log('Account Principal:', accountPrincipal);
+        console.log('Environment:', PAGA_CONFIG.baseUrl.includes('sandbox') ? 'SANDBOX' : 'LIVE');
         console.log('---');
         
         // Make API request
@@ -73,14 +96,11 @@ async function checkAccountBalance() {
         console.error('❌ Error checking balance:');
         
         if (error.response) {
-            // Server responded with error status
             console.error('Status:', error.response.status);
             console.error('Response:', error.response.data);
         } else if (error.request) {
-            // Request was made but no response received
             console.error('No response received:', error.request);
         } else {
-            // Something else happened
             console.error('Error:', error.message);
         }
         
@@ -88,16 +108,64 @@ async function checkAccountBalance() {
     }
 }
 
-// Function to get list of banks (useful for transfers)
-async function getBanks() {
+// Function to check business account balance
+async function checkBusinessAccountBalance() {
     try {
-        const referenceNumber = generateReferenceNumber();
+        const referenceNumber = generateReferenceNumber('business-balance');
         const hashString = referenceNumber + PAGA_CONFIG.hashKey;
         const hash = generateHash(hashString);
         
         const requestData = {
             referenceNumber: referenceNumber,
-            locale: ""
+            accountPrincipal: PAGA_CONFIG.principal,
+            sourceOfFunds: PAGA_CONFIG.principal,
+            accountCredentials: PAGA_CONFIG.credentials,
+            locale: process.env.PAGA_LOCALE || "en"
+        };
+        
+        const headers = {
+            'principal': PAGA_CONFIG.principal,
+            'credentials': PAGA_CONFIG.credentials,
+            'hash': hash,
+            'Content-Type': 'application/json'
+        };
+        
+        console.log('🔍 Checking business account balance...');
+        console.log('Reference Number:', referenceNumber);
+        console.log('Environment:', PAGA_CONFIG.baseUrl.includes('sandbox') ? 'SANDBOX' : 'LIVE');
+        console.log('---');
+        
+        const response = await axios.post(
+            `${PAGA_CONFIG.baseUrl}/paga-webservices/business-rest/secured/accountBalance`,
+            requestData,
+            { headers }
+        );
+        
+        console.log('✅ Business Account Balance Response:');
+        console.log('Response Code:', response.data.responseCode);
+        console.log('Message:', response.data.message);
+        console.log('Total Balance:', response.data.totalBalance);
+        console.log('Available Balance:', response.data.availableBalance);
+        console.log('Currency:', response.data.currency);
+        
+        return response.data;
+        
+    } catch (error) {
+        console.error('❌ Error checking business balance:', error.response?.data || error.message);
+        throw error;
+    }
+}
+
+// Function to get list of banks
+async function getBanks() {
+    try {
+        const referenceNumber = generateReferenceNumber('banks');
+        const hashString = referenceNumber + PAGA_CONFIG.hashKey;
+        const hash = generateHash(hashString);
+        
+        const requestData = {
+            referenceNumber: referenceNumber,
+            locale: process.env.PAGA_LOCALE || "en"
         };
         
         const headers = {
@@ -135,17 +203,33 @@ async function getBanks() {
     }
 }
 
+// Function to validate environment configuration
+function validateEnvironment() {
+    console.log('🔧 Environment Configuration:');
+    console.log('Base URL:', PAGA_CONFIG.baseUrl);
+    console.log('Principal:', PAGA_CONFIG.principal);
+    console.log('Credentials:', PAGA_CONFIG.credentials ? '***HIDDEN***' : 'NOT SET');
+    console.log('Hash Key:', PAGA_CONFIG.hashKey ? '***HIDDEN***' : 'NOT SET');
+    console.log('Locale:', process.env.PAGA_LOCALE || 'en (default)');
+    console.log('Environment Type:', PAGA_CONFIG.baseUrl.includes('sandbox') ? 'SANDBOX' : 'LIVE');
+    
+    if (!PAGA_CONFIG.baseUrl.includes('sandbox')) {
+        console.log('⚠️  WARNING: You are using the LIVE environment - real money transactions!');
+    }
+    
+    console.log('=====================================');
+}
+
 // Main function to run tests
 async function main() {
     console.log('🚀 Starting Paga API Tests...');
-    console.log('Using LIVE Environment:', PAGA_CONFIG.baseUrl);
-    console.log('Principal:', PAGA_CONFIG.principal);
-    console.log('⚠️  WARNING: This is the LIVE environment - real money transactions!');
-    console.log('=====================================');
+    
+    // Validate environment
+    validateEnvironment();
     
     try {
-        // Test 1: Check account balance
-        await checkAccountBalance();
+        // Test 1: Check business account balance
+        await checkBusinessAccountBalance();
         
         console.log('\n=====================================');
         
@@ -156,15 +240,19 @@ async function main() {
         
     } catch (error) {
         console.log('\n❌ Tests failed. Please check your credentials and network connection.');
+        console.error('Error details:', error.message);
     }
 }
 
 // Export functions for use in other files
 module.exports = {
     checkAccountBalance,
+    checkBusinessAccountBalance,
     getBanks,
     generateHash,
-    PAGA_CONFIG
+    generateReferenceNumber,
+    PAGA_CONFIG,
+    validateEnvironment
 };
 
 // Run the script if called directly
